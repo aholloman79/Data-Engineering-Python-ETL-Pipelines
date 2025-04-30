@@ -1,0 +1,73 @@
+# I'm importing pandas so I can work with tabular data using DataFrames
+import pandas as pd
+
+# I need SQLAlchemy to establish a connection to my PostgreSQL database and run SQL queries
+import sqlalchemy
+
+# I'm using Google Cloud's BigQuery client to load data to BigQuery later in my pipeline
+from google.cloud import bigquery
+
+# This connector allows me to connect and insert data into Snowflake
+import snowflake.connector
+
+# I’m importing time in case I want to log execution durations or add delays (not used yet)
+import time
+
+# Here I’m initializing a SQLAlchemy engine with my PostgreSQL connection string so I can query the database
+source_engine = sqlalchemy.create_engine('postgresql://user:password@host:port/dbname')
+
+# This function handles the extraction of data either from a PostgreSQL database or from a fallback CSV file
+def extract_data(query: str, fallback_csv: str = None) -> pd.DataFrame:
+    """
+    I wrote this function to extract data from my PostgreSQL database.
+    If the connection fails or the query doesn't work, it’ll try to read the data from a backup CSV file instead.
+
+    Parameters:
+        query (str): This is the SQL query I want to run against my PostgreSQL DB.
+        fallback_csv (str, optional): If the SQL fails, I want the function to try reading from this CSV file path.
+
+    Returns:
+        pd.DataFrame: It returns a DataFrame no matter where the data comes from (SQL or CSV).
+    """
+
+    try:
+        # I'm attempting to extract data from my PostgreSQL DB by executing the query using pandas' read_sql_query()
+        print("Attempting to extract from PostgreSQL...")
+        df = pd.read_sql_query(query, source_engine)
+
+        # If successful, this will confirm it in the console
+        print("Successfully extracted from PostgreSQL.")
+        
+        # I return the DataFrame that was created from the SQL query
+        return df
+
+    except Exception as e:
+        # If anything goes wrong with the DB connection or query, I catch the error here and print it
+        print(f"Database extraction failed: {e}")
+
+        # If I provided a fallback CSV path, I’ll try to load the data from there instead
+        if fallback_csv:
+            try:
+                # I’ll inform myself that the function is now trying the CSV fallback method
+                print(f"Attempting to extract from fallback CSV: {fallback_csv}")
+
+                # Using pandas to read the CSV file into a DataFrame
+                df = pd.read_csv(fallback_csv)
+
+                # Success message if the CSV loads properly
+                print("Successfully extracted from CSV fallback.")
+
+                # I return the DataFrame from the CSV if this works
+                return df
+
+            except FileNotFoundError as fe:
+                # If the CSV file path is incorrect or missing, I’ll catch that specific error here
+                print(f"CSV file not found: {fe}")
+
+            except Exception as fe:
+                # Any other issue with loading the CSV will be caught here and printed
+                print(f"Failed to load CSV fallback: {fe}")
+
+    # If both the SQL and CSV fail, I want the function to safely return an empty DataFrame instead of crashing
+    print("Returning empty DataFrame.")
+    return pd.DataFrame()
