@@ -1,0 +1,104 @@
+# I'm importing pandas so I can load, manipulate, and clean my tabular data using DataFrames
+import pandas as pd
+
+# SQLAlchemy helps me connect to my PostgreSQL database so I can run SQL queries from Python
+import sqlalchemy
+
+# This BigQuery client library allows me to upload data to Google Cloud's BigQuery warehouse
+from google.cloud import bigquery
+
+# This connector allows me to connect to my Snowflake data warehouse and run insert statements
+import snowflake.connector
+
+# I’m importing time just in case I want to log durations or add delays later (not using it yet)
+import time
+
+# I'm establishing a connection to my PostgreSQL database using SQLAlchemy
+# I pass in the username, password, host, port, and database name all in one connection string
+source_engine = sqlalchemy.create_engine(
+    'postgresql://etl_user:secure_password@localhost:5432/sales_db'
+)
+
+# This function tries to extract data using a SQL query from PostgreSQL
+# If that fails, it attempts to read the data from a backup CSV file instead
+def extract_data(query: str, fallback_csv: str = None) -> pd.DataFrame:
+    try:
+        # I attempt to execute the SQL query and load the result into a DataFrame
+        print("Attempting to extract from PostgreSQL...")
+        df = pd.read_sql_query(query, source_engine)
+
+        # If the query works, I confirm and return the DataFrame
+        print("Successfully extracted from PostgreSQL.")
+        return df
+
+    except Exception as e:
+        # If something goes wrong (e.g., connection issue), I catch the error and log it
+        print(f"Database extraction failed: {e}")
+
+        # If a fallback CSV path was provided, I try reading from that file instead
+        if fallback_csv:
+            try:
+                print(f"Attempting to extract from fallback CSV: {fallback_csv}")
+                df = pd.read_csv(fallback_csv)
+                print("Successfully extracted from CSV fallback.")
+                return df
+            except FileNotFoundError as fe:
+                print(f"CSV file not found: {fe}")
+            except Exception as fe:
+                print(f"Failed to load CSV fallback: {fe}")
+
+    # If both methods fail, I return an empty DataFrame to prevent the pipeline from crashing
+    print("Returning empty DataFrame.")
+    return pd.DataFrame()
+
+# This function is where I clean and prep the data before uploading it
+# I lowercase the column names and remove any duplicate rows
+def transform_data(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [col.lower() for col in df.columns]  # Consistency helps avoid future case-sensitivity issues
+    df.drop_duplicates(inplace=True)  # Removing duplicates ensures cleaner and more reliable data
+    return df
+
+# This function takes a DataFrame and loads it to a table in BigQuery
+def load_to_bigquery(df: pd.DataFrame, dataset_id: str, table_id: str):
+    client = bigquery.Client(project="my-data-project")  # I create a BigQuery client to authenticate and send data
+    job = client.load_table_from_dataframe(df, f"{dataset_id}.{table_id}")  # I push the DataFrame to BigQuery
+    job.result()  # I make sure the job finishes before moving on
+    print("Loaded to BigQuery.")  # I log a confirmation message
+
+# This function loads data into Snowflake row by row
+# It's a bit slower than bulk copy, but works well for small-to-medium datasets
+def load_to_snowflake(df: pd.DataFrame, table_name: str, conn_params: dict):
+    conn = snowflake.connector.connect(**conn_params)  # I connect to Snowflake using my credentials
+    cs = conn.cursor()  # I create a cursor to run SQL commands
+
+    for _, row in df.iterrows():  # I loop through each row in the DataFrame
+        placeholders = ', '.join(['%s'] * len(row))  # I create placeholders for each column in the row
+        sql = f"INSERT INTO {table_name} VALUES ({placeholders})"  # I prepare an INSERT SQL command
+        cs.execute(sql, tuple(row))  # I execute the insert for the current row
+    conn.commit()  # I commit all the changes once the loop is done
+    print("Loaded to Snowflake.")  # I log success once done
+
+# Now I define my query to extract all customer data from PostgreSQL
+query = "SELECT * FROM customer_data"
+
+# If the DB is unavailable, I want to fall back on this CSV file instead
+csv_backup_path = "customer_data_backup.csv"
+
+# I extract the data using my custom function, which uses SQL or CSV depending on availability
+df = extract_data(query, fallback_csv=csv_backup_path)
+
+# I transform the extracted data before uploading it
+df = transform_data(df)
+
+# I load the cleaned data to BigQuery so the marketing team can run dashboards on it
+load_to_bigquery(df, 'marketing_analytics', 'customer_data')
+
+# I also load the data to Snowflake where BI analysts can query it alongside other sales data
+load_to_snowflake(df, 'customer_table', conn_params={
+    'user': 'AVERY_MARCELL',  # My Snowflake username
+    'password': 'My$nowflakeSecureP@ss',  # My secure password (this should ideally be stored in a secret manager)
+    'account': 'mycompany.snowflakecomputing.com',  # My Snowflake account URL
+    'warehouse': 'DATA_PIPELINE_WH',  # The virtual warehouse that runs my queries
+    'database': 'SALES_DB',  # The target database in Snowflake
+    'schema': 'PUBLIC'  # The schema where my table lives
+})
