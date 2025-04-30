@@ -1,0 +1,38 @@
+import pandas as pd
+import sqlalchemy
+from google.cloud import bigquery
+import snowflake.connector
+import time
+
+# Example: Source database (PostgreSQL)
+source_engine = sqlalchemy.create_engine('postgresql://user:password@host:port/dbname')
+
+# Step 1: Extract data from source
+def extract_data(query):
+    df = pd.read_sql_query(query, source_engine)
+    return df
+
+# Step 2: Transform data
+def transform_data(df):
+    # Example transformation
+    df.columns = [col.lower() for col in df.columns]
+    df.drop_duplicates(inplace=True)
+    return df
+
+# Step 3a: Load to BigQuery
+def load_to_bigquery(df, dataset_id, table_id):
+    client = bigquery.Client()
+    job = client.load_table_from_dataframe(df, f"{dataset_id}.{table_id}")
+    job.result()  # Wait for job to complete
+    print("Loaded to BigQuery.")
+
+# Step 3b: Load to Snowflake
+def load_to_snowflake(df, table_name, conn_params):
+    conn = snowflake.connector.connect(**conn_params)
+    cs = conn.cursor()
+    for index, row in df.iterrows():
+        placeholders = ', '.join(['%s'] * len(row))
+        sql = f"INSERT INTO {table_name} VALUES ({placeholders})"
+        cs.execute(sql, tuple(row))
+    conn.commit()
+    print("Loaded to Snowflake.")
