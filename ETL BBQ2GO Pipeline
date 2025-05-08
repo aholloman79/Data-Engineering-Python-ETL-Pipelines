@@ -1,0 +1,66 @@
+```python
+# Import standard library modules
+import os  # os: to access environment variables containing configuration secrets
+
+# Third-party libraries
+import pandas as pd  # pandas: for data extraction and transformation using DataFrames
+from sqlalchemy import create_engine  # create_engine: to establish PostgreSQL connections via SQLAlchemy
+from google.cloud import bigquery  # bigquery: to load transformed data into Google BigQuery
+
+# Load ETL configuration from environment variables
+PG_URI = os.getenv('BBQ2GO_PG_URI')  # PG_URI: PostgreSQL connection string for BBQ2GO sales database
+BQ_PROJECT = os.getenv('BBQ2GO_BQ_PROJECT')  # BQ_PROJECT: Google Cloud project for BigQuery operations
+BQ_DATASET = os.getenv('BBQ2GO_BQ_DATASET')  # BQ_DATASET: BigQuery dataset name for storing summaries
+
+# Step 1: Extract sales data from PostgreSQL
+engine = create_engine(PG_URI)  # engine: SQLAlchemy engine object to run SQL queries against PostgreSQL
+query = (
+    """
+    SELECT order_id, customer_id, order_time, menu_item, quantity, price
+    FROM sales_orders
+    WHERE order_time >= CURRENT_DATE - INTERVAL '1 day'
+    """
+)  # query: fetch all orders from the past day for analysis
+orders_df = pd.read_sql(query, engine)  # orders_df: DataFrame holding extracted sales records
+
+# Step 2: Transform data for targeted menu items
+orders_df['total_amount'] = orders_df['quantity'] * orders_df['price']  # compute total_amount per line: quantity × price
+menu_items = ['Brisket Sandwich w/ Bacon', 'Loaded Brisket Fries']  # menu_items: define target items for the report
+filtered_df = orders_df[orders_df['menu_item'].isin(menu_items)].copy()  # filtered_df: subset containing only our target items
+
+# Aggregate daily sales metrics by menu_item
+summary_df = (
+    filtered_df
+    .groupby('menu_item')
+    .agg(
+        total_quantity=('quantity', 'sum'),  # total_quantity: sum of quantities sold
+        total_revenue=('total_amount', 'sum')  # total_revenue: sum of total_amount values
+    )
+    .reset_index()  # reset_index: convert grouped index back to a column for BigQuery schema compatibility
+)
+
+# Step 3: Load aggregated summary into BigQuery
+client = bigquery.Client(project=BQ_PROJECT)  # client: BigQuery client initialized with the project context
+table_id = f"{BQ_PROJECT}.{BQ_DATASET}.daily_menu_summary"  # table_id: fully qualified target table identifier
+
+# Configure BigQuery load job settings
+job_config = bigquery.LoadJobConfig(
+    write_disposition='WRITE_APPEND',  # WRITE_APPEND: append new rows rather than overwrite existing data
+    schema=[  # schema: explicit column definitions to enforce data types
+        bigquery.SchemaField('menu_item', 'STRING'),
+        bigquery.SchemaField('total_quantity', 'INTEGER'),
+        bigquery.SchemaField('total_revenue', 'FLOAT'),
+    ]
+)
+
+# Execute the load job from DataFrame to BigQuery table
+load_job = client.load_table_from_dataframe(
+    summary_df,  # source: the aggregated summary DataFrame
+    table_id,    # destination: BigQuery table reference
+    job_config=job_config  # job_config: defines write behavior and schema
+)
+load_job.result()  # result(): block until the job finishes and retrieve job metadata
+
+# Confirm load success
+print(f"Loaded {load_job.output_rows} rows into {table_id}.")  # print: display success message with row count
+```
